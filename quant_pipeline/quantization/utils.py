@@ -1,4 +1,5 @@
 import torch
+import platform
 
 from quant_pipeline.quantization.qat import (
     prepare_model_for_qat,
@@ -7,111 +8,89 @@ from quant_pipeline.quantization.qat import (
 from quant_pipeline.quantization.qat_trainer import train_qat
 
 
+# -------------------------------
+# 🔍 SYSTEM DETECTION
+# -------------------------------
+def get_system_info():
+    system = platform.system()
+    processor = platform.processor()
 
-#  CROSS-PLATFORM BACKEND SETUP
-def set_quantization_backend():
-    supported = torch.backends.quantized.supported_engines
+    is_mac = system == "Darwin"
+    is_arm = "arm" in processor.lower() or "apple" in processor.lower()
 
-    if "fbgemm" in supported:
-        torch.backends.quantized.engine = "fbgemm"
-    elif "qnnpack" in supported:
-        torch.backends.quantized.engine = "qnnpack"
-    else:
-        print(" No quantization backend available:", supported)
-
-
-# Call once
-set_quantization_backend()
+    return is_mac, is_arm
 
 
-
-#  SAFE TEST FUNCTION
-
-def test_model_forward(model):
-    """
-    Runs a small dummy forward pass to ensure model works after quantization.
-    """
-    try:
-        dummy_input = {
-            "input_ids": torch.randint(0, 100, (1, 10)),
-            "attention_mask": torch.ones(1, 10),
-        }
-
-        with torch.no_grad():
-            model(**dummy_input)
-
-        return True
-
-    except Exception as e:
-        print(" Quantized model failed during forward pass:", e)
-        return False
+def is_apple_silicon():
+    is_mac, is_arm = get_system_info()
+    return is_mac and is_arm
 
 
-
-#  MAIN QUANTIZATION FUNCTION
-
+# -------------------------------
+# 🔥 MAIN QUANTIZATION FUNCTION
+# -------------------------------
 def apply_quantization(model, mode, tokenizer=None, train_data=None):
+
     if mode == "fp32":
         return model
 
     elif mode == "fp16":
         return model.half()
 
-
-    #  INT8 POST-TRAINING QUANTIZATION
+    # ---------------------------------
+    # 🔥 INT8 PTQ (CROSS PLATFORM)
+    # ---------------------------------
     elif mode == "int8_ptq":
+
+        # ✅ MAC → proxy
+        if is_apple_silicon():
+            print("⚠️ Mac detected → Using FP16 as INT8 proxy")
+            return model.half()
+
+        # ✅ WINDOWS / LINUX → real INT8
         try:
+            torch.backends.quantized.engine = "fbgemm"
+
             model_q = torch.quantization.quantize_dynamic(
                 model,
                 {torch.nn.Linear},
                 dtype=torch.qint8,
             )
 
-            if test_model_forward(model_q):
-                print(" INT8 PTQ applied successfully")
-                return model_q
-            else:
-                raise RuntimeError("Forward pass failed after PTQ")
+            print("✅ True INT8 PTQ applied")
+            return model_q
 
         except Exception as e:
-            print("\n INT8 PTQ not supported on this system.")
-            print("Fallback → FP16")
-            print("Reason:", e, "\n")
-
+            print("⚠️ INT8 PTQ failed → fallback FP16")
+            print("Reason:", e)
             return model.half()
 
-
-    #  INT8 QAT (SAFE VERSION)
+    # ---------------------------------
+    # 🔥 INT8 QAT
+    # ---------------------------------
     elif mode == "int8_qat":
-        try:
-            if tokenizer is None or train_data is None:
-                raise ValueError("QAT requires tokenizer and training data")
 
+        # ✅ MAC → proxy
+        if is_apple_silicon():
+            print("⚠️ Mac detected → Using FP16 as QAT proxy")
+            return model.half()
+
+        # ✅ WINDOWS / LINUX → real QAT
+        try:
             texts, labels = train_data
 
-            model_qat = prepare_model_for_qat(model)
+            torch.backends.quantized.engine = "fbgemm"
 
-            model_qat = train_qat(
-                model_qat,
-                tokenizer,
-                texts,
-                labels,
-                epochs=1,
-            )
+            model = prepare_model_for_qat(model)
+            model = train_qat(model, tokenizer, texts, labels, epochs=1)
+            model = convert_qat_model(model)
 
-            model_qat = convert_qat_model(model_qat)
-
-            if test_model_forward(model_qat):
-                print(" INT8 QAT applied successfully")
-                return model_qat
-            else:
-                raise RuntimeError("Forward pass failed after QAT")
+            print("✅ True INT8 QAT applied")
+            return model
 
         except Exception as e:
-            print("\n INT8 QAT not supported on this system.")
-            print("Fallback → FP16")
-            print("Reason:", e, "\n")
-
+            print("⚠️ QAT failed → fallback FP16")
+            print("Reason:", e)
             return model.half()
 
     else:

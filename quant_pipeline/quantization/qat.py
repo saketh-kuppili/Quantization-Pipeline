@@ -5,12 +5,12 @@ from torch.quantization import get_default_qat_qconfig, prepare_qat, convert
 def prepare_model_for_qat(model):
     model.train()
 
-    #  disable global quantization
+    # ❌ Disable global qconfig
     model.qconfig = None
 
-    qconfig = get_default_qat_qconfig("qnnpack")
+    qconfig = get_default_qat_qconfig("fbgemm")
 
-    #  ONLY apply to Linear layers
+    # ✅ Only Linear layers
     for name, module in model.named_modules():
         if isinstance(module, torch.nn.Linear):
             module.qconfig = qconfig
